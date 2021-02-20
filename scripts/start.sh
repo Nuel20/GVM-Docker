@@ -103,7 +103,6 @@ if [ ! -d /usr/local/var/lib/gvm/cert-data ]; then
 fi
 
 
-fi
 if [ ! -f "/data/setup" ]; then
 	echo "Creating Greenbone Vulnerability Manager database"
 	su -c "createuser -DRS gvm" postgres
@@ -225,7 +224,6 @@ fi
 echo "Starting Postfix for report delivery by email"
 
 sed -i "s/^relayhost.*$/relayhost = ${RELAYHOST}:${SMTPPORT}/" /etc/postfix/main.cf
-# Start the postfix  bits
 service postfix start
 
 if [ -S /tmp/ospd.sock ]; then
