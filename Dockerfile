@@ -2,9 +2,10 @@ FROM ubuntu:20.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
-EXPOSE 9392
-COPY install-pkgs.sh /install-pkgs.sh
 
+EXPOSE 9392
+
+COPY install-pkgs.sh /install-pkgs.sh
 RUN bash /install-pkgs.sh
 
 ENV gvm_libs_version="v20.8.0" \
@@ -140,18 +141,15 @@ RUN cd /build && \
     cd /build && \
     rm -rf *
     
-    #
-    # Install GVM-Tools
-    #
+
+# Install GVM-Tools
+# Make sure all libraries are linked and add a random directory suddenly needed by ospd :/
 RUN python3 -m pip install gvm-tools==$gvm_tools_version && \
-    echo "/usr/local/lib" > /etc/ld.so.conf.d/openvas.conf && ldconfig  
-
-    # 
-    # Make sure all libraries are linked and add a random directory suddenly needed by ospd :/
-    #
-
-RUN ldconfig && \
-    mkdir /var/run/ospd
+    apt-get clean && \
+    echo "/usr/local/lib" > /etc/ld.so.conf.d/openvas.conf && ldconfig  && \
+    ldconfig && \ 
+    kdir /var/run/ospd
+ 
 
 COPY scripts/* /
 
