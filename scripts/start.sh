@@ -12,13 +12,17 @@ TZ=${TZ:-UTC}
 SSHD=${SSHD:-false}
 DB_PASSWORD=${DB_PASSWORD:-none}
 
+
 if [ ! -d "/run/redis" ]; then
 	mkdir /run/redis
 fi
 if  [ -S /run/redis/redis.sock ]; then
         rm /run/redis/redis.sock
 fi
-redis-server --unixsocket /run/redis/redis.sock --unixsocketperm 700 --timeout 0 --databases 512 --maxclients 4096 --daemonize yes --port 6379 --bind 0.0.0.0
+
+redis-server --unixsocket /run/redis/redis.sock --unixsocketperm 700 \
+             --timeout 0 --databases $REDISDBS --maxclients 4096 --daemonize yes \
+             --port 6379 --bind 0.0.0.0
 
 echo "Wait for redis socket to be created..."
 while  [ ! -S /run/redis/redis.sock ]; do
@@ -35,65 +39,67 @@ done
 echo "Redis ready."
 
 
-if  [ ! -d /data ]; then
-	echo "Creating Data folder..."
-        mkdir /data
-fi
-
 if  [ ! -d /data/database ]; then
-	echo "Creating Database folder..."
-	mkdir /data/database
+	echo "Creating Data and database folder..."
+	mv /var/lib/postgresql/12/main /data/database
+	ln -s /data/database /var/lib/postgresql/12/main
+	chown postgres:postgres -R /var/lib/postgresql/12/main
 	chown postgres:postgres -R /data/database
-	su -c "/usr/lib/postgresql/12/bin/initdb /data/database" postgres
 fi
 
-chown postgres:postgres -R /data/database
+
+
+if [ ! -L /var/lib/postgresql/12/main ]; then
+	echo "Fixing Database folder..."
+	rm -rf /var/lib/postgresql/12/main
+	ln -s /data/database /var/lib/postgresql/12/main
+	chown postgres:postgres -R /var/lib/postgresql/12/main
+	chown postgres:postgres -R /data/database
+fi
+
+if [ ! -L /usr/local/var/lib  ]; then
+	echo "Fixing local/var/lib ... "
+	if [ ! -d /data/var-lib ]; then
+		mkdir /data/var-lib
+	fi
+	cp -rf /usr/local/var/lib/* /data/var-lib
+	rm -rf /usr/local/var/lib
+	ln -s /data/var-lib /usr/local/var/lib
+fi
+if [ ! -L /usr/local/share ]; then
+	echo "Fixing local/share ... "
+	if [ ! -d /data/local-share ]; then mkdir /data/local-share; fi
+	cp -rf /usr/local/share/* /data/local-share/
+	rm -rf /usr/local/share 
+	ln -s /data/local-share /usr/local/share 
+fi
+
+
+if [ ! -f "/setup" ]; then
+	echo "Creating postgresql.conf and pg_hba.conf"
+
+	echo "listen_addresses = '*'" >> /data/database/postgresql.conf
+	echo "port = 5432" >> /data/database/postgresql.conf
+	echo -e "host\tall\tall\t0.0.0.0/0\ttrust" >> /data/database/pg_hba.conf
+	echo -e "host\tall\tall\t::0/0\ttrust" >> /data/database/pg_hba.conf
+	echo -e "local\tall\tall\ttrust"  >> /data/database/pg_hba.conf
+fi
 
 echo "Starting PostgreSQL..."
 su -c "/usr/lib/postgresql/12/bin/pg_ctl -D /data/database start" postgres
 
-if  [ ! -d /data/ssh ]; then
-	echo "Creating SSH folder..."
-	mkdir /data/ssh
-	
-	rm -rf /etc/ssh/ssh_host_*
-	
-	dpkg-reconfigure openssh-server
-	
-	mv /etc/ssh/ssh_host_* /data/ssh/
-fi
 
-if  [ ! -h /etc/ssh ]; then
-	rm -rf /etc/ssh
-	ln -s /data/ssh /etc/ssh
-fi
-
-if [ ! -f "/firstrun" ]; then
+if [ ! -f "/setup" ]; then
 	echo "Running first start configuration..."
-	
-	ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-
-	echo "Creating Greenbone Vulnerability system user..."
 	useradd --home-dir /usr/local/share/gvm gvm
-	
-	chown gvm:gvm -R /usr/local/share/openvas
-	chown gvm:gvm -R /usr/local/var/lib/openvas
-	
 	chown gvm:gvm -R /usr/local/share/gvm
-	
-	mkdir /usr/local/var/lib/gvm/cert-data
-	
-	chown gvm:gvm -R /usr/local/var/lib/gvm
-	chmod 770 -R /usr/local/var/lib/gvm
-	
-	chown gvm:gvm -R /usr/local/var/log/gvm
-	
-	chown gvm:gvm -R /usr/local/var/run
-	
-	touch /firstrun
-fi
+	if [ ! -d /usr/local/var/lib/gvm/cert-data ]; then 
+		mkdir -p /usr/local/var/lib/gvm/cert-data; 
+	fi
 
-if [ ! -f "/data/firstrun" ]; then
+
+fi
+if [ ! -f "/data/setup" ]; then
 	echo "Creating Greenbone Vulnerability Manager database"
 	su -c "createuser -DRS gvm" postgres
 	su -c "createdb -O gvm gvmd" postgres
@@ -101,20 +107,29 @@ if [ ! -f "/data/firstrun" ]; then
 	su -c "psql --dbname=gvmd --command='grant dba to gvm;'" postgres
 	su -c "psql --dbname=gvmd --command='create extension \"uuid-ossp\";'" postgres
 	su -c "psql --dbname=gvmd --command='create extension \"pgcrypto\";'" postgres
-	
-	echo "listen_addresses = '*'" >> /data/database/postgresql.conf
-	echo "port = 5432" >> /data/database/postgresql.conf
-	echo "jit = off" >> /data/database/postgresql.conf
-	
-	echo "host    all             all              0.0.0.0/0                 md5" >> /data/database/pg_hba.conf
-	echo "host    all             all              ::/0                      md5" >> /data/database/pg_hba.conf
-	
 	chown postgres:postgres -R /data/database
-	
 	su -c "/usr/lib/postgresql/12/bin/pg_ctl -D /data/database restart" postgres
-	
-	touch /data/firstrun
+	if [ ! /data/var-lib/gvm/CA/servercert.pem ]; then
+		echo "Generating certs..."
+    	gvm-manage-certs -a
+	fi
+	touch /data/setup
 fi
+
+
+
+chown gvm:gvm -R /usr/local/var/lib/gvm
+chmod 770 -R /usr/local/var/lib/gvm
+chown gvm:gvm -R /usr/local/var/log/gvm
+chown gvm:gvm -R /usr/local/var/run	
+
+if [ -d /usr/local/var/lib/gvm/data-objects/gvmd/20.08/report_formats ]; then
+	echo "Creating dir structure for feed sync"
+	for dir in configs port_lists report_formats; do 
+		su -c "mkdir -p /usr/local/var/lib/gvm/data-objects/gvmd/20.08/${dir}" gvm
+	done
+fi
+
 
 su -c "gvmd --migrate" gvm
 
@@ -122,215 +137,122 @@ if [ $DB_PASSWORD != "none" ]; then
 	su -c "psql --dbname=gvmd --command=\"alter user gvm password '$DB_PASSWORD';\"" postgres
 fi
 
-if  [ ! -d /data/gvmd ]; then
-	echo "Creating gvmd folder..."
-	mkdir /data/gvmd
-	cp -r /report_formats /data/gvmd/
+
+echo "Updating NVTs and other data"
+chmod 777 /usr/local/var/run/
+if [ -f /usr/local/var/run/feed-update.lock ]; then
+        echo "Removing feed-update.lock"
+	rm /usr/local/var/run/feed-update.lock
 fi
 
-if  [ ! -h /usr/local/var/lib/gvm/gvmd ]; then
-	echo "Fixing gvmd folder..."
-	rm -rf /usr/local/var/lib/gvm/gvmd
-	ln -s /data/gvmd /usr/local/var/lib/gvm/gvmd
-	
-	chown gvm:gvm -R /data/gvmd
-	chown gvm:gvm -R /usr/local/var/lib/gvm/gvmd
+
+if [ $QUIET == "TRUE" ] || [ $QUIET == "true" ]; then
+	QUIET="true"
+	echo " Fine, ... we'll be quiet, but we warn you if there are errors"
+	echo " syncing the feeds, you'll miss them."
+else
+	QUIET="false"
 fi
 
-if  [ ! -d /data/certs ]; then
-	echo "Creating certs folder..."
-	mkdir -p /data/certs/CA
-	mkdir -p /data/certs/private
-	
-	echo "Generating certs..."
-	gvm-manage-certs -a
-	
-	cp /usr/local/var/lib/gvm/CA/* /data/certs/CA/
-	
-	cp -r /usr/local/var/lib/gvm/private/* /data/certs/private/
-	
-	chown gvm:gvm -R /data/certs
+if [ $QUIET == "true" ]; then 
+	echo " Pulling NVTs from greenbone" 
+	su -c "/usr/local/bin/greenbone-nvt-sync" gvm 2&> /dev/null
+	sleep 2
+	echo " Pulling scapdata from greenbone"
+	su -c "/usr/local/sbin/greenbone-scapdata-sync" gvm 2&> /dev/null
+	sleep 2
+	echo " Pulling cert-data from greenbone"
+	su -c "/usr/local/sbin/greenbone-certdata-sync" gvm 2&> /dev/null
+	sleep 2
+	echo " Pulling latest GVMD Data from greenbone" 
+	su -c "/usr/local/sbin/greenbone-feed-sync --type GVMD_DATA " gvm 2&> /dev/null
+
+else
+	echo " Pulling NVTs from greenbone" 
+	su -c "/usr/local/bin/greenbone-nvt-sync" gvm
+	sleep 2
+	echo " Pulling scapdata from greenboon"
+	su -c "/usr/local/sbin/greenbone-scapdata-sync" gvm
+	sleep 2
+	echo " Pulling cert-data from greenbone"
+	su -c "/usr/local/sbin/greenbone-certdata-sync" gvm
+	sleep 2
+	echo " Pulling latest GVMD Data from Greenbone" 
+	su -c "/usr/local/sbin/greenbone-feed-sync --type GVMD_DATA " gvm
+
 fi
 
-if [ ! -h /usr/local/var/lib/gvm/CA ]; then
-	echo "Fixing certs CA folder..."
-	rm -rf /usr/local/var/lib/gvm/CA
-	ln -s /data/certs/CA /usr/local/var/lib/gvm/CA
-	
-	chown gvm:gvm -R /data/certs
-	chown gvm:gvm -R /usr/local/var/lib/gvm/CA
+echo "Starting Greenbone Vulnerability Manager..."
+su -c "gvmd --osp-vt-update=/tmp/ospd.sock" gvm
+
+until su -c "gvmd --get-users" gvm; do
+	echo "Waiting for gvmd"
+	sleep 1
+done
+
+echo "Checking for $USERNAME"
+set +e
+su -c "gvmd --get-users | grep -qis $USERNAME " gvm
+if [ $? -ne 0 ]; then
+	echo "$USERNAME does not exist"
+	echo "Creating Greenbone Vulnerability Manager admin user as $USERNAME"
+	su -c "gvmd --role=\"Super Admin\" --create-user=\"$USERNAME\" --password=\"$PASSWORD\"" gvm
+	echo "admin user created"
+	ADMINUUID=$(su -c "gvmd --get-users --verbose | awk '{print \$2}' " gvm)
+	echo "admin user UUID is $ADMINUUID"
+	echo "Granting admin access to defaults"
+	su -c "gvmd --modify-setting 78eceaec-3385-11ea-b237-28d24461215b --value $ADMINUUID" gvm
 fi
+echo "reset "
+set -Eeuo pipefail
+touch /setup
 
-if [ ! -h /usr/local/var/lib/gvm/private ]; then
-	echo "Fixing certs private folder..."
-	rm -rf /usr/local/var/lib/gvm/private
-	ln -s /data/certs/private /usr/local/var/lib/gvm/private
-	chown gvm:gvm -R /data/certs
-	chown gvm:gvm -R /usr/local/var/lib/gvm/private
-fi
+chown -R gvm:gvm /data/var-lib 
 
-if  [ ! -d /data/plugins ]; then
-	echo "Creating NVT Plugins folder..."
-	mkdir /data/plugins
-fi
-
-if [ ! -h /usr/local/var/lib/openvas/plugins ]; then
-	echo "Fixing NVT Plugins folder..."
-	rm -rf /usr/local/var/lib/openvas/plugins
-	ln -s /data/plugins /usr/local/var/lib/openvas/plugins
-	chown gvm:gvm -R /data/plugins
-	chown gvm:gvm -R /usr/local/var/lib/openvas/plugins
-fi
-
-if  [ ! -d /data/cert-data ]; then
-	echo "Creating CERT Feed folder..."
-	mkdir /data/cert-data
-fi
-
-if [ ! -h /usr/local/var/lib/gvm/cert-data ]; then
-	echo "Fixing CERT Feed folder..."
-	rm -rf /usr/local/var/lib/gvm/cert-data
-	ln -s /data/cert-data /usr/local/var/lib/gvm/cert-data
-	chown gvm:gvm -R /data/cert-data
-	chown gvm:gvm -R /usr/local/var/lib/gvm/cert-data
-fi
-
-if  [ ! -d /data/scap-data ]; then
-	echo "Creating SCAP Feed folder..."
-	
-	mkdir /data/scap-data
-fi
-
-if [ ! -h /usr/local/var/lib/gvm/scap-data ]; then
-	echo "Fixing SCAP Feed folder..."
-	
-	rm -rf /usr/local/var/lib/gvm/scap-data
-	
-	ln -s /data/scap-data /usr/local/var/lib/gvm/scap-data
-	
-	chown gvm:gvm -R /data/scap-data
-	chown gvm:gvm -R /usr/local/var/lib/gvm/scap-data
-fi
-
-if  [ ! -d /data/data-objects/gvmd ]; then
-	echo "Creating GVMd Data Objects folder..."
-	
-	mkdir -p /data/data-objects/gvmd
-fi
-
-if [ ! -h /usr/local/var/lib/gvm/data-objects ]; then
-	echo "Fixing GVMd Data Objects folder..."
-	
-	rm -rf /usr/local/var/lib/gvm/data-objects
-	
-	ln -s /data/data-objects /usr/local/var/lib/gvm/data-objects
-	
-	chown gvm:gvm -R /data/data-objects
-	chown gvm:gvm -R /usr/local/var/lib/gvm/data-objects
-fi
-
-# Sync NVTs, CERT data, and SCAP data on container start
-/sync-all.sh
-
-###########################
-#Remove leftover pid files#
-###########################
 
 if [ -f /var/run/ospd.pid ]; then
   rm /var/run/ospd.pid
 fi
 
+
+echo "Starting Postfix for report delivery by email"
+
+sed -i "s/^relayhost.*$/relayhost = ${RELAYHOST}:${SMTPPORT}/" /etc/postfix/main.cf
+# Start the postfix  bits
+service postfix start
+
 if [ -S /tmp/ospd.sock ]; then
   rm /tmp/ospd.sock
 fi
-
-if [ ! -d /var/run/ospd ]; then
-  mkdir /var/run/ospd
-fi
-
-echo "Starting Postfix for report delivery by email"
-sed -i "s/^relayhost.*$/relayhost = ${RELAYHOST}:${SMTPPORT}/" /etc/postfix/main.cf
-service postfix start
-
 echo "Starting Open Scanner Protocol daemon for OpenVAS..."
-ospd-openvas --log-file /usr/local/var/log/gvm/ospd-openvas.log --unix-socket /var/run/ospd/ospd.sock --log-level INFO
+ospd-openvas --log-file /usr/local/var/log/gvm/ospd-openvas.log \
+             --unix-socket /tmp/ospd.sock --log-level INFO --socket-mode 666
 
-while  [ ! -S /var/run/ospd/ospd.sock ]; do
+
+while  [ ! -S /tmp/ospd.sock ]; do
 	sleep 1
 done
 
-chmod 666 /var/run/ospd/ospd.sock
 
-echo "Creating OSPd socket link from old location..."
-rm -rf /tmp/ospd.sock
-ln -s /var/run/ospd/ospd.sock /tmp/ospd.sock
-
-echo "Starting Greenbone Vulnerability Manager..."
-su -c "gvmd --listen=0.0.0.0 --port=9390" gvm
-
-echo "Waiting for Greenbone Vulnerability Manager to finish startup..."
-until su -c "gvmd --get-users" gvm; do
-	sleep 1
-done
-
-if [ ! -f "/data/created_gvm_user" ]; then
-	echo "Creating Greenbone Vulnerability Manager admin user"
-	su -c "gvmd --role=\"Super Admin\" --create-user=\"$USERNAME\" --password=\"$PASSWORD\"" gvm
-	
-	USERSLIST=$(su -c "gvmd --get-users --verbose" gvm)
-	IFS=' '
-	read -ra ADDR <<<"$USERSLIST"
-	
-	echo "${ADDR[1]}"
-	
-	su -c "gvmd --modify-setting 78eceaec-3385-11ea-b237-28d24461215b --value ${ADDR[1]}" gvm
-	
-	touch /data/created_gvm_user
+if [ ! -L /var/run/ospd/ospd.sock ]; then
+	echo "Fixing the ospd socket ..."
+	rm -f /var/run/ospd/ospd.sock
+	ln -s /tmp/ospd.sock /var/run/ospd/ospd.sock 
 fi
+
+
+
+
 
 echo "Starting Greenbone Security Assistant..."
-if [ $HTTPS == "true" ]; then
-	su -c "gsad --verbose --gnutls-priorities=SECURE128:-AES-128-CBC:-CAMELLIA-128-CBC:-VERS-SSL3.0:-VERS-TLS1.0 --timeout=$TIMEOUT --no-redirect --mlisten=127.0.0.1 --mport=9390 --port=9392" gvm
-else
-	su -c "gsad --verbose --http-only --timeout=$TIMEOUT --no-redirect --mlisten=127.0.0.1 --mport=9390 --port=9392" gvm
-fi
-
-if [ $SSHD == "true" ]; then
-	echo "Starting OpenSSH Server..."
-	
-	if  [ ! -d /data/scanner-ssh-keys ]; then
-		echo "Creating scanner SSH keys folder..."
-		mkdir /data/scanner-ssh-keys
-		chown gvm:gvm -R /data/scanner-ssh-keys
-	fi
-	if [ ! -h /usr/local/share/gvm/.ssh ]; then
-		echo "Fixing scanner SSH keys folder..."
-		rm -rf /usr/local/share/gvm/.ssh
-		ln -s /data/scanner-ssh-keys /usr/local/share/gvm/.ssh
-		chown gvm:gvm -R /data/scanner-ssh-keys
-		chown gvm:gvm -R /usr/local/share/gvm/.ssh
-	fi
-	
-	if [ ! -d /sockets ]; then
-		mkdir /sockets
-		chown gvm:gvm -R /sockets
-	fi
-	
-	echo "gvm:gvm" | chpasswd
-	
-	rm -rf /var/run/sshd
-	mkdir -p /var/run/sshd
-	
-	/usr/sbin/sshd -f /sshd_config -E /usr/local/var/log/gvm/sshd.log
-fi
-
+su -c "gsad --verbose --http-only --no-redirect --port=9392" gvm
+GVMVER=$(su -c "gvmd --version" gvm ) 
 echo "++++++++++++++++++++++++++++++++++++++++++++++"
-echo "+ Your GVM 20.04 container is now ready to use! +"
+echo "+ Your GVM/openvas/postgresql container is now ready to use! +"
 echo "++++++++++++++++++++++++++++++++++++++++++++++"
 echo ""
-echo "-----------------------------------------------------------"
-echo "Server Public key: $(cat /etc/ssh/ssh_host_ed25519_key.pub)"
-echo "-----------------------------------------------------------"
+echo "gvmd --version"
+echo "$GVMVER"
 echo ""
 echo "++++++++++++++++"
 echo "+ Tailing logs +"

@@ -6,6 +6,7 @@ echo "deb http://apt.postgresql.org/pub/repos/apt focal-pgdg main" > /etc/apt/so
 curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
 
 apt-get update
+apt-get upgrade -y
 
 { cat <<EOF
 bison
@@ -36,6 +37,8 @@ libpopt-dev
 libsnmp-dev
 libssh-gcrypt-dev
 libxml2-dev
+locales-all
+mailutils
 net-tools
 nmap
 nsis
