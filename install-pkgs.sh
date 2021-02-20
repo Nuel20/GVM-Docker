@@ -86,4 +86,5 @@ apt-get update
 apt-get install yarn -yq --no-install-recommends
 
 
-rm -rf /var/lib/apt/lists/*
+echo "/usr/local/lib" > /etc/ld.so.conf.d/openvas.conf
+ldconfig

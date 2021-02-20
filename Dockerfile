@@ -152,5 +152,6 @@ RUN python3 -m pip install gvm-tools==$gvm_tools_version && \
  
 
 COPY scripts/* /
-
-CMD '/start.sh'
+HEALTHCHECK --interval=600s --start-period=1200s --timeout=3s \
+  CMD curl -f http://localhost:9392/ || exit 1
+ENTRYPOINT [ "/start.sh" ]
