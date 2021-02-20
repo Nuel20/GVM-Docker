@@ -7,5 +7,7 @@ services:
       - "PASSWORD=Your admin password here"
     volumes:
       - "openvas:/data"
-    container_name: openvas
-    image: immauss/openvas
+    container_name: gvm-docker
+    image: securecompliance/gvm-docker
+volumes:
+  openvas:

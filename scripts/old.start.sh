@@ -3,10 +3,16 @@ set -Eeuo pipefail
 
 USERNAME=${USERNAME:-admin}
 PASSWORD=${PASSWORD:-admin}
-RELAYHOST=${RELAYHOST:-172.17.0.1}
+TIMEOUT=${TIMEOUT:-15}
+RELAYHOST=${RELAYHOST:-smtp}
+# RELAYHOST=${RELAYHOST:-172.17.0.1}
 SMTPPORT=${SMTPPORT:-25}
 REDISDBS=${REDISDBS:-512}
 QUIET=${QUIET:-false}
+HTTPS=${HTTPS:-true}
+TZ=${TZ:-UTC}
+SSHD=${SSHD:-false}
+DB_PASSWORD=${DB_PASSWORD:-none}
 
 
 
@@ -37,13 +43,11 @@ echo "Redis ready."
 
 # This is for a first run with no existing database.
 if  [ ! -d /data/database ]; then
-	mkdir -p /data/database
 	echo "Creating Data and database folder..."
-	mv /var/lib/postgresql/12/main/* /data/database
+	mv /var/lib/postgresql/12/main /data/database
 	ln -s /data/database /var/lib/postgresql/12/main
 	chown postgres:postgres -R /var/lib/postgresql/12/main
 	chown postgres:postgres -R /data/database
-	chmod 700 /data/database
 fi
 
 # These are  needed for a first run WITH a new container image
@@ -92,17 +96,16 @@ echo "Starting PostgreSQL..."
 su -c "/usr/lib/postgresql/12/bin/pg_ctl -D /data/database start" postgres
 
 
-echo "Running first start configuration..."
-if !  grep -qs gvm /etc/passwd ; then 
-	echo "Adding gvm user"
+if [ ! -f "/setup" ]; then
+	echo "Running first start configuration..."
 	useradd --home-dir /usr/local/share/gvm gvm
-fi
-chown gvm:gvm -R /usr/local/share/gvm
-if [ ! -d /usr/local/var/lib/gvm/cert-data ]; then 
-	mkdir -p /usr/local/var/lib/gvm/cert-data; 
-fi
+	chown gvm:gvm -R /usr/local/share/gvm
+	if [ ! -d /usr/local/var/lib/gvm/cert-data ]; then 
+		mkdir -p /usr/local/var/lib/gvm/cert-data; 
+	fi
 
 
+fi
 if [ ! -f "/data/setup" ]; then
 	echo "Creating Greenbone Vulnerability Manager database"
 	su -c "createuser -DRS gvm" postgres
@@ -127,15 +130,13 @@ chmod 770 -R /usr/local/var/lib/gvm
 chown gvm:gvm -R /usr/local/var/log/gvm
 chown gvm:gvm -R /usr/local/var/run	
 
-if [ ! -d /usr/local/var/lib/gvm/data-objects/gvmd/20.08/report_formats ]; then
+if [ -d /usr/local/var/lib/gvm/data-objects/gvmd/20.08/report_formats ]; then
 	echo "Creating dir structure for feed sync"
 	for dir in configs port_lists report_formats; do 
 		su -c "mkdir -p /usr/local/var/lib/gvm/data-objects/gvmd/20.08/${dir}" gvm
 	done
 fi
 
-mkdir -p /usr/local/var/lib/openvas/plugins
-chown -R gvm:gvm /usr/local/var/lib/openvas 
 
 su -c "gvmd --migrate" gvm
 
@@ -154,42 +155,10 @@ if [ -f /usr/local/var/run/feed-update.lock ]; then
 	rm /usr/local/var/run/feed-update.lock
 fi
 
-# This will make the feed syncs a little quieter
-if [ $QUIET == "TRUE" ] || [ $QUIET == "true" ]; then
-	QUIET="true"
-	echo " Fine, ... we'll be quiet, but we warn you if there are errors"
-	echo " syncing the feeds, you'll miss them."
-else
-	QUIET="false"
-fi
 
-if [ $QUIET == "true" ]; then 
-	echo " Pulling NVTs from greenbone" 
-	su -c "/usr/local/bin/greenbone-nvt-sync" gvm 2&> /dev/null
-	sleep 2
-	echo " Pulling scapdata from greenbone"
-	su -c "/usr/local/sbin/greenbone-scapdata-sync" gvm 2&> /dev/null
-	sleep 2
-	echo " Pulling cert-data from greenbone"
-	su -c "/usr/local/sbin/greenbone-certdata-sync" gvm 2&> /dev/null
-	sleep 2
-	echo " Pulling latest GVMD Data from greenbone" 
-	su -c "/usr/local/sbin/greenbone-feed-sync --type GVMD_DATA " gvm 2&> /dev/null
+# SYNC NVT AND OTHER DATA
+/sync.sh
 
-else
-	echo " Pulling NVTs from greenbone" 
-	su -c "/usr/local/bin/greenbone-nvt-sync" gvm
-	sleep 2
-	echo " Pulling scapdata from greenboon"
-	su -c "/usr/local/sbin/greenbone-scapdata-sync" gvm
-	sleep 2
-	echo " Pulling cert-data from greenbone"
-	su -c "/usr/local/sbin/greenbone-certdata-sync" gvm
-	sleep 2
-	echo " Pulling latest GVMD Data from Greenbone" 
-	su -c "/usr/local/sbin/greenbone-feed-sync --type GVMD_DATA " gvm
-
-fi
 
 echo "Starting Greenbone Vulnerability Manager..."
 su -c "gvmd --osp-vt-update=/tmp/ospd.sock" gvm
@@ -250,24 +219,17 @@ done
 # Update ... I think this is no longer needed.
 # Need to test. Added this back when gvmd --rebuild failed from command line.
 # suspect it would have worked fine if using the --osp-vt-update=/tmp/ospd.sock
-# It might even work just fine if I remove ALL of the socket refs 
-# as they should use the same default
-
 if [ ! -L /var/run/ospd/ospd.sock ]; then
-	mkdir -p /var/run/ospd
 	echo "Fixing the ospd socket ..."
+	#rm -f /var/run/openvassd.sock
+	#ln -s /tmp/ospd.sock /var/run/openvassd.sock
 	rm -f /var/run/ospd/ospd.sock
 	ln -s /tmp/ospd.sock /var/run/ospd/ospd.sock 
 fi
 
-# Used by gvm-pyshell socket access:
-# docker exec -u gvm -it openvas /usr/local/bin/gvm-pyshell --gmp-username admin --gmp-password admin_password socket
-if [ ! -S /var/run/gvmd.sock ]; then 
-	if [ -L /var/run/gvmd.sock ]; then
-		rm /var/run/gvmd.sock
-	fi
-	ln -s /usr/local/var/run/gvmd.sock /var/run/gvmd.sock
-fi
+
+
+
 
 echo "Starting Greenbone Security Assistant..."
 su -c "gsad --verbose --http-only --no-redirect --port=9392" gvm
